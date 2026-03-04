@@ -1,0 +1,574 @@
+import { useState, useEffect, useRef } from "react";
+import { UserDashboardSidebar } from "@/components/user-dashboard/UserDashboardSidebar";
+import { UserDashboardHeader } from "@/components/user-dashboard/UserDashboardHeader";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { User, Briefcase, GraduationCap, Award, Upload, Save, FileText, X } from "lucide-react";
+import { useToast } from "@/components/ui/use-toast";
+import { supabase } from "@/integrations/supabase/client";
+import { extractTextFromPDF } from "@/utils/pdf";
+
+interface ExperienceEntry {
+    id: string;
+    title: string;
+    company: string;
+    description: string;
+}
+
+interface ProjectEntry {
+    id: string;
+    name: string;
+    description: string;
+}
+
+interface UserProfile {
+    fullName: string;
+    email: string;
+    phone: string;
+    location: string;
+    yearsOfExperience: string;
+    college: string;
+    degree: string;
+    jobPreference: "internship" | "job" | "switch" | "";
+    desiredRole: string;
+    skills: string;
+    experiences: ExperienceEntry[];
+    projects: ProjectEntry[];
+    resumeFileName?: string;
+    resumeContent?: string;
+}
+
+const Profile = () => {
+    const [sidebarOpen, setSidebarOpen] = useState(false);
+    const { toast } = useToast();
+    const [loading, setLoading] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [profile, setProfile] = useState<UserProfile>({
+        fullName: "",
+        email: "",
+        phone: "",
+        location: "",
+        yearsOfExperience: "",
+        college: "",
+        degree: "",
+        jobPreference: "",
+        desiredRole: "",
+        skills: "",
+        experiences: [],
+        projects: [],
+    });
+
+    useEffect(() => {
+        loadProfile();
+    }, []);
+
+    const loadProfile = async () => {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.email) {
+            const saved = localStorage.getItem(`profile_${user.email}`);
+            if (saved) {
+                setProfile(JSON.parse(saved));
+            } else {
+                setProfile(prev => ({ ...prev, email: user.email || "" }));
+            }
+        }
+    };
+
+    const handleInputChange = (field: keyof UserProfile, value: string) => {
+        setProfile(prev => ({ ...prev, [field]: value }));
+    };
+
+    const handleResumeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        if (file.size > 10 * 1024 * 1024) {
+            toast({
+                variant: "destructive",
+                title: "File too large",
+                description: "Resume must be under 10MB",
+            });
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const resumeText = await extractTextFromPDF(file);
+            console.log("Extracted resume text:", resumeText.substring(0, 500)); // Debug log
+
+            // Extract all information first
+            const extractedData = extractDataFromResume(resumeText);
+            console.log("Extracted data:", extractedData); // Debug log
+
+            // Update profile state with extracted data and resume info
+            setProfile(prev => ({
+                ...prev,
+                ...extractedData,
+                resumeFileName: file.name,
+                resumeContent: resumeText,
+            }));
+
+            toast({
+                title: "Resume uploaded!",
+                description: "Profile auto-filled from resume. Please review and save.",
+            });
+        } catch (error) {
+            console.error("Resume upload error:", error);
+            toast({
+                variant: "destructive",
+                title: "Upload failed",
+                description: "Could not process resume. Please try again.",
+            });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const extractDataFromResume = (resumeText: string): Partial<UserProfile> => {
+        const extractedData: Partial<UserProfile> = {};
+
+        // Extract name - look for capitalized words at the beginning
+        const lines = resumeText.split('\n').filter(l => l.trim());
+        const nameMatch = lines[0]?.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/);
+        if (nameMatch) {
+            extractedData.fullName = nameMatch[1].trim();
+        }
+
+        // Extract email
+        const emailMatch = resumeText.match(/[\w\.-]+@[\w\.-]+\.\w+/);
+        if (emailMatch) {
+            extractedData.email = emailMatch[0];
+        }
+
+        // Extract phone
+        const phoneMatch = resumeText.match(/(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+        if (phoneMatch) {
+            extractedData.phone = phoneMatch[0];
+        }
+
+        // Extract years of experience
+        const expMatch = resumeText.match(/(\d+)\+?\s*(years?|yrs)\s*(of\s*)?experience/i);
+        if (expMatch) {
+            extractedData.yearsOfExperience = expMatch[1];
+        }
+
+        // Extract location/address
+        const locationMatch = resumeText.match(/(?:Location|Address):\s*([^\n]+)/i) ||
+            resumeText.match(/([A-Z][a-z]+,\s*[A-Z]{2})/); // City, State
+        if (locationMatch) {
+            extractedData.location = locationMatch[1].trim();
+        }
+
+        // Extract college/university
+        const collegeMatch = resumeText.match(/(University|College|Institute)\s+[^\n]+/i);
+        if (collegeMatch) {
+            extractedData.college = collegeMatch[0].trim();
+        }
+
+        // Extract degree
+        const degreeMatch = resumeText.match(/(Bachelor|Master|B\.?Tech|M\.?Tech|B\.?S\.?|M\.?S\.?)\s*(?:of|in)?\s*([^\n,]+)/i);
+        if (degreeMatch) {
+            extractedData.degree = degreeMatch[0].trim();
+        }
+
+        // Extract skills - look for skills section
+        const skillsMatch = resumeText.match(/(?:Skills|Technical Skills|Core Skills)\s*:?\s*([^\n]+(?:\n(?!\n)[^\n]+)*)/i);
+        if (skillsMatch) {
+            extractedData.skills = skillsMatch[1].trim().replace(/\s+/g, ' ');
+        }
+
+        return extractedData;
+    };
+
+    const handleRemoveResume = () => {
+        setProfile(prev => ({
+            ...prev,
+            resumeFileName: undefined,
+            resumeContent: undefined,
+        }));
+
+        // Reset file input
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+
+        toast({
+            title: "Resume removed",
+            description: "You can upload a new resume anytime.",
+        });
+    }
+
+    const addExperience = () => {
+        setProfile(prev => ({
+            ...prev,
+            experiences: [
+                ...prev.experiences,
+                { id: Date.now().toString(), title: "", company: "", description: "" }
+            ]
+        }));
+    };
+
+    const removeExperience = (id: string) => {
+        setProfile(prev => ({
+            ...prev,
+            experiences: prev.experiences.filter(exp => exp.id !== id)
+        }));
+    };
+
+    const updateExperience = (id: string, field: keyof ExperienceEntry, value: string) => {
+        setProfile(prev => ({
+            ...prev,
+            experiences: prev.experiences.map(exp =>
+                exp.id === id ? { ...exp, [field]: value } : exp
+            )
+        }));
+    };
+
+    const addProject = () => {
+        setProfile(prev => ({
+            ...prev,
+            projects: [
+                ...prev.projects,
+                { id: Date.now().toString(), name: "", description: "" }
+            ]
+        }));
+    };
+
+    const removeProject = (id: string) => {
+        setProfile(prev => ({
+            ...prev,
+            projects: prev.projects.filter(proj => proj.id !== id)
+        }));
+    };
+
+    const updateProject = (id: string, field: keyof ProjectEntry, value: string) => {
+        setProfile(prev => ({
+            ...prev,
+            projects: prev.projects.map(proj =>
+                proj.id === id ? { ...proj, [field]: value } : proj
+            )
+        }));
+    };
+
+    const handleSave = async () => {
+        if (!profile.fullName || !profile.email) {
+            toast({
+                variant: "destructive",
+                title: "Missing fields",
+                description: "Please fill name and email.",
+            });
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user?.email) {
+                localStorage.setItem(`profile_${user.email}`, JSON.stringify(profile));
+                toast({
+                    title: "Profile saved!",
+                    description: "Updated successfully.",
+                });
+            }
+        } catch (error) {
+            toast({
+                variant: "destructive",
+                title: "Save failed",
+            });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="min-h-screen bg-black text-foreground flex">
+            <UserDashboardSidebar />
+
+            <div className="flex-1 flex flex-col lg:ml-64">
+                <UserDashboardHeader onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
+
+                <main className="flex-1 pt-16 px-4 pb-6 overflow-y-auto">
+                    <div className="max-w-7xl mx-auto">
+
+                        {/* Compact Header */}
+                        <div className="mb-4">
+                            <h1 className="text-2xl font-bold tracking-tight">Profile</h1>
+                            <p className="text-xs text-muted-foreground">Complete your profile for better interview preparation</p>
+                        </div>
+
+                        {/* Compact Grid Layout */}
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+
+                            {/* Left Column - Resume Upload & Personal */}
+                            <div className="lg:col-span-1 space-y-3">
+
+                                {/* Quick Setup */}
+                                <Card className="bg-gradient-to-br from-purple-950/50 via-purple-900/30 to-blue-950/50 border-purple-500/20 backdrop-blur-sm">
+                                    <CardHeader className="pb-2">
+                                        <CardTitle className="text-sm flex items-center gap-2">
+                                            <Upload className="w-4 h-4" />
+                                            Quick Setup
+                                        </CardTitle>
+                                        <p className="text-[10px] text-muted-foreground">Auto-fill from resume</p>
+                                    </CardHeader>
+                                    <CardContent className="pb-3">
+                                        <Input
+                                            ref={fileInputRef}
+                                            type="file"
+                                            accept=".pdf"
+                                            onChange={handleResumeUpload}
+                                            disabled={loading}
+                                            className="h-8 text-xs bg-black/40 border-white/10"
+                                        />
+                                        {profile.resumeFileName && (
+                                            <div className="flex items-center justify-between mt-2 p-2 rounded bg-green-500/10 border border-green-500/20">
+                                                <div className="flex items-center gap-1 text-[10px] text-green-400">
+                                                    <FileText className="w-3 h-3" />
+                                                    <span className="truncate max-w-[200px]">{profile.resumeFileName}</span>
+                                                </div>
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={handleRemoveResume}
+                                                    className="h-5 w-5 p-0 hover:bg-red-500/20 text-red-400 hover:text-red-300"
+                                                >
+                                                    <X className="w-3 h-3" />
+                                                </Button>
+                                            </div>
+                                        )}
+                                    </CardContent>
+                                </Card>
+
+                                {/* Personal Info */}
+                                <Card className="bg-black/40 border-white/5 backdrop-blur-sm">
+                                    <CardHeader className="pb-2">
+                                        <CardTitle className="text-sm flex items-center gap-2">
+                                            <User className="w-4 h-4 text-blue-400" />
+                                            Personal
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent className="space-y-2 pb-3">
+                                        <div>
+                                            <Label htmlFor="fullName" className="text-[10px] text-gray-400">Full Name *</Label>
+                                            <Input
+                                                id="fullName"
+                                                value={profile.fullName}
+                                                onChange={(e) => handleInputChange("fullName", e.target.value)}
+                                                placeholder="John Doe"
+                                                className="h-8 text-xs bg-black/40 border-white/10 mt-1"
+                                            />
+                                        </div>
+                                        <div>
+                                            <Label htmlFor="email" className="text-[10px] text-gray-400">Email *</Label>
+                                            <Input
+                                                id="email"
+                                                type="email"
+                                                value={profile.email}
+                                                onChange={(e) => handleInputChange("email", e.target.value)}
+                                                placeholder="john@example.com"
+                                                className="h-8 text-xs bg-black/40 border-white/10 mt-1"
+                                            />
+                                        </div>
+                                        <div>
+                                            <Label htmlFor="phone" className="text-[10px] text-gray-400">Phone</Label>
+                                            <Input
+                                                id="phone"
+                                                value={profile.phone}
+                                                onChange={(e) => handleInputChange("phone", e.target.value)}
+                                                placeholder="+1 234 567 8900"
+                                                className="h-8 text-xs bg-black/40 border-white/10 mt-1"
+                                            />
+                                        </div>
+                                        <div>
+                                            <Label htmlFor="location" className="text-[10px] text-gray-400">Location</Label>
+                                            <Input
+                                                id="location"
+                                                value={profile.location}
+                                                onChange={(e) => handleInputChange("location", e.target.value)}
+                                                placeholder="San Francisco, CA"
+                                                className="h-8 text-xs bg-black/40 border-white/10 mt-1"
+                                            />
+                                        </div>
+                                    </CardContent>
+                                </Card>
+
+                                {/* Education */}
+                                <Card className="bg-black/40 border-white/5 backdrop-blur-sm">
+                                    <CardHeader className="pb-2">
+                                        <CardTitle className="text-sm flex items-center gap-2">
+                                            <GraduationCap className="w-4 h-4 text-green-400" />
+                                            Education
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent className="space-y-2 pb-3">
+                                        <div>
+                                            <Label htmlFor="college" className="text-[10px] text-gray-400">College</Label>
+                                            <Input
+                                                id="college"
+                                                value={profile.college}
+                                                onChange={(e) => handleInputChange("college", e.target.value)}
+                                                placeholder="Stanford University"
+                                                className="h-8 text-xs bg-black/40 border-white/10 mt-1"
+                                            />
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <Label htmlFor="degree" className="text-[10px] text-gray-400">Degree</Label>
+                                                <Input
+                                                    id="degree"
+                                                    value={profile.degree}
+                                                    onChange={(e) => handleInputChange("degree", e.target.value)}
+                                                    placeholder="B.Tech CS"
+                                                    className="h-8 text-xs bg-black/40 border-white/10 mt-1"
+                                                />
+                                            </div>
+                                            <div>
+                                                <Label htmlFor="graduationYear" className="text-[10px] text-gray-400">Year</Label>
+                                                <Input
+                                                    id="graduationYear"
+                                                    value={profile.graduationYear}
+                                                    onChange={(e) => handleInputChange("graduationYear", e.target.value)}
+                                                    placeholder="2024"
+                                                    className="h-8 text-xs bg-black/40 border-white/10 mt-1"
+                                                />
+                                            </div>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </div>
+
+                            {/* Middle Column - Professional */}
+                            <div className="lg:col-span-1 space-y-3">
+                                <Card className="bg-black/40 border-white/5 backdrop-blur-sm">
+                                    <CardHeader className="pb-2">
+                                        <CardTitle className="text-sm flex items-center gap-2">
+                                            <Briefcase className="w-4 h-4 text-purple-400" />
+                                            Professional
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent className="space-y-2 pb-3">
+                                        <div>
+                                            <Label htmlFor="currentRole" className="text-[10px] text-gray-400">Current Role</Label>
+                                            <Input
+                                                id="currentRole"
+                                                value={profile.currentRole}
+                                                onChange={(e) => handleInputChange("currentRole", e.target.value)}
+                                                placeholder="Software Engineer"
+                                                className="h-8 text-xs bg-black/40 border-white/10 mt-1"
+                                            />
+                                        </div>
+                                        <div>
+                                            <Label htmlFor="yearsOfExperience" className="text-[10px] text-gray-400">Years of Experience</Label>
+                                            <Input
+                                                id="yearsOfExperience"
+                                                value={profile.yearsOfExperience}
+                                                onChange={(e) => handleInputChange("yearsOfExperience", e.target.value)}
+                                                placeholder="3"
+                                                className="h-8 text-xs bg-black/40 border-white/10 mt-1"
+                                            />
+                                        </div>
+                                        <div>
+                                            <Label htmlFor="jobPreference" className="text-[10px] text-gray-400">Job Preference</Label>
+                                            <Select value={profile.jobPreference} onValueChange={(val) => handleInputChange("jobPreference", val)}>
+                                                <SelectTrigger className="h-8 text-xs bg-black/40 border-white/10 mt-1">
+                                                    <SelectValue placeholder="Select" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="internship">Internship</SelectItem>
+                                                    <SelectItem value="job">Full-time</SelectItem>
+                                                    <SelectItem value="switch">Switch</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div>
+                                            <Label htmlFor="desiredRole" className="text-[10px] text-gray-400">Desired Role</Label>
+                                            <Input
+                                                id="desiredRole"
+                                                value={profile.desiredRole}
+                                                onChange={(e) => handleInputChange("desiredRole", e.target.value)}
+                                                placeholder="Senior SWE"
+                                                className="h-8 text-xs bg-black/40 border-white/10 mt-1"
+                                            />
+                                        </div>
+                                        <div>
+                                            <Label htmlFor="skills" className="text-[10px] text-gray-400">Skills</Label>
+                                            <Textarea
+                                                id="skills"
+                                                value={profile.skills}
+                                                onChange={(e) => handleInputChange("skills", e.target.value)}
+                                                placeholder="React, Node.js, Python, AWS..."
+                                                className="min-h-[60px] text-xs bg-black/40 border-white/10 mt-1 resize-none"
+                                            />
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </div>
+
+                            {/* Right Column - Experience & Projects */}
+                            <div className="lg:col-span-1 space-y-3">
+                                <Card className="bg-black/40 border-white/5 backdrop-blur-sm">
+                                    <CardHeader className="pb-2">
+                                        <CardTitle className="text-sm flex items-center gap-2">
+                                            <Award className="w-4 h-4 text-yellow-400" />
+                                            Experience & Projects
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent className="space-y-2 pb-3">
+                                        <div>
+                                            <Label htmlFor="experience" className="text-[10px] text-gray-400">Work Experience</Label>
+                                            <Textarea
+                                                id="experience"
+                                                value={profile.experience}
+                                                onChange={(e) => handleInputChange("experience", e.target.value)}
+                                                placeholder="Describe work experience..."
+                                                className="min-h-[120px] text-xs bg-black/40 border-white/10 mt-1 resize-none"
+                                            />
+                                        </div>
+                                        <div>
+                                            <Label htmlFor="projects" className="text-[10px] text-gray-400">Projects</Label>
+                                            <Textarea
+                                                id="projects"
+                                                value={profile.projects}
+                                                onChange={(e) => handleInputChange("projects", e.target.value)}
+                                                placeholder="List key projects..."
+                                                className="min-h-[120px] text-xs bg-black/40 border-white/10 mt-1 resize-none"
+                                            />
+                                        </div>
+                                    </CardContent>
+                                </Card>
+
+                                {/* Save Button */}
+                                <Button
+                                    onClick={handleSave}
+                                    disabled={loading}
+                                    className="w-full h-9 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-sm"
+                                >
+                                    {loading ? (
+                                        <>
+                                            <span className="animate-spin mr-2">⏳</span>
+                                            Saving...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Save className="w-3.5 h-3.5 mr-2" />
+                                            Save Profile
+                                        </>
+                                    )}
+                                </Button>
+                            </div>
+
+                        </div>
+                    </div>
+                </main>
+            </div>
+        </div>
+    );
+};
+
+export default Profile;
+
